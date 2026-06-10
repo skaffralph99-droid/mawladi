@@ -3,19 +3,36 @@ import { supabase } from '../lib/supabase'
 import { Zap } from 'lucide-react'
 
 export default function Login() {
-  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
   const [pass, setPass] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  // Convert phone to a fake email for Supabase auth (no SMS needed)
+  const phoneToEmail = (p: string) => {
+    const clean = p.replace(/\D/g, '')
+    return `${clean}@mawladi.app`
+  }
+
   const submit = async () => {
+    const clean = phone.replace(/\D/g, '')
+    if (clean.length < 8) { setError('أدخل رقم هاتف صحيح'); return }
+    if (pass.length < 6) { setError('كلمة المرور يجب أن تكون ٦ أحرف على الأقل'); return }
+
     setLoading(true); setError('')
-    const { error: e } = await supabase.auth.signInWithPassword({ email, password: pass })
-    if (e) {
-      if (e.message.includes('Invalid login')) {
-        const { error: e2 } = await supabase.auth.signUp({ email, password: pass })
-        if (e2) setError(e2.message)
-      } else setError(e.message)
+    const email = phoneToEmail(clean)
+
+    // Try login first
+    const { error: loginErr } = await supabase.auth.signInWithPassword({ email, password: pass })
+
+    if (loginErr) {
+      if (loginErr.message.includes('Invalid login')) {
+        // First time — create account
+        const { error: signupErr } = await supabase.auth.signUp({ email, password: pass })
+        if (signupErr) setError(signupErr.message)
+      } else {
+        setError(loginErr.message === 'Invalid login credentials' ? 'رقم الهاتف أو كلمة المرور خطأ' : loginErr.message)
+      }
     }
     setLoading(false)
   }
@@ -31,11 +48,25 @@ export default function Login() {
           <p className="text-mw-dim text-sm mt-2">إدارة اشتراكات المولدات</p>
         </div>
         <div className="card space-y-4">
-          <div><label className="label-m">البريد الإلكتروني</label><input value={email} onChange={e => setEmail(e.target.value)} className="input-m" type="email" placeholder="you@email.com" dir="ltr" /></div>
-          <div><label className="label-m">كلمة المرور</label><input value={pass} onChange={e => setPass(e.target.value)} className="input-m" type="password" placeholder="••••••" dir="ltr" /></div>
-          {error && <p className="text-mw-red text-sm font-semibold">{error}</p>}
-          <button onClick={submit} disabled={loading || !email || !pass} className="btn-amber">{loading ? 'جاري...' : 'تسجيل الدخول'}</button>
+          <div>
+            <label className="label-m">رقم الهاتف</label>
+            <input value={phone} onChange={e => setPhone(e.target.value)}
+              className="input-m text-left" type="tel" inputMode="tel"
+              placeholder="03 123 456" dir="ltr" autoFocus />
+          </div>
+          <div>
+            <label className="label-m">كلمة المرور</label>
+            <input value={pass} onChange={e => setPass(e.target.value)}
+              className="input-m" type="password" placeholder="••••••" dir="ltr"
+              onKeyDown={e => e.key === 'Enter' && submit()} />
+            <p className="text-mw-dim text-[10px] mt-1.5">أول مرة؟ سجّل رقمك وكلمة مرور جديدة</p>
+          </div>
+          {error && <p className="text-mw-red text-sm font-semibold animate-fade-in">{error}</p>}
+          <button onClick={submit} disabled={loading || !phone || !pass} className="btn-amber">
+            {loading ? (<><span className="w-4 h-4 border-2 border-mw-bg/30 border-t-mw-bg rounded-full spinner" /> جاري...</>) : 'دخول ⚡'}
+          </button>
         </div>
+        <p className="text-center text-mw-dim text-[10px]">Mawladi — تطبيق إدارة المولدات</p>
       </div>
     </div>
   )

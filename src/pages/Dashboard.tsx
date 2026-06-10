@@ -15,13 +15,16 @@ export default function Dashboard() {
   const currentMonth = format(new Date(), 'yyyy-MM')
 
   useEffect(() => {
-    Promise.all([
-      supabase.from('mawladi_buildings').select('*').order('name'),
-      supabase.from('mawladi_apartments').select('*').eq('is_active', true),
-      supabase.from('mawladi_payments').select('*').eq('month', currentMonth),
-    ]).then(([b, a, p]) => {
-      setBuildings(b.data ?? []); setApartments(a.data ?? []); setPayments(p.data ?? [])
-      setLoading(false)
+    // Claim any seed data on first load
+    supabase.rpc('mawladi_claim_buildings').then(() => {
+      Promise.all([
+        supabase.from('mawladi_buildings').select('*').order('name'),
+        supabase.from('mawladi_apartments').select('*').eq('is_active', true),
+        supabase.from('mawladi_payments').select('*').eq('month', currentMonth),
+      ]).then(([b, a, p]) => {
+        setBuildings(b.data ?? []); setApartments(a.data ?? []); setPayments(p.data ?? [])
+        setLoading(false)
+      })
     })
   }, [])
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { ArrowRight, Plus, Check, X, Phone, RefreshCw } from 'lucide-react'
+import { ArrowRight, Plus, Check, X, Phone } from 'lucide-react'
 import { format } from 'date-fns'
 
 function money(n: any) { return '$' + Math.round(Number(n) || 0).toLocaleString('en-US') }
@@ -20,22 +20,32 @@ export default function BuildingDetail() {
   const [phone, setPhone] = useState('')
   const [amps, setAmps] = useState('10')
   const [saving, setSaving] = useState(false)
-  const [generating, setGenerating] = useState(false)
 
   const currentMonth = format(new Date(), 'yyyy-MM')
   const monthLabel = format(new Date(), 'MMMM yyyy')
 
-  const load = () => {
+  const load = async () => {
     if (!id) return
-    Promise.all([
+
+    const [b, a] = await Promise.all([
       supabase.from('mawladi_buildings').select('*').eq('id', id).single(),
       supabase.from('mawladi_apartments').select('*').eq('building_id', id).eq('is_active', true).order('number'),
-      supabase.from('mawladi_payments').select('*').eq('building_id', id).eq('month', currentMonth),
-    ]).then(([b, a, p]) => {
-      setBuilding(b.data); setApartments(a.data ?? []); setPayments(p.data ?? [])
-      setLoading(false)
-    })
+    ])
+
+    setBuilding(b.data)
+    setApartments(a.data ?? [])
+
+    // Auto-generate this month's bills if they don't exist
+    if (b.data && (a.data ?? []).length > 0) {
+      await supabase.rpc('mawladi_generate_bills', { p_building_id: id, p_month: currentMonth })
+    }
+
+    // Now fetch the payments (including any just generated)
+    const { data: p } = await supabase.from('mawladi_payments').select('*').eq('building_id', id).eq('month', currentMonth)
+    setPayments(p ?? [])
+    setLoading(false)
   }
+
   useEffect(() => { load() }, [id])
 
   if (loading) return <div className="flex items-center justify-center h-[60vh] text-mw-dim">⚡</div>
@@ -44,14 +54,6 @@ export default function BuildingDetail() {
   const totalOwed = payments.reduce((s, p) => s + Number(p.amount), 0)
   const totalPaid = payments.filter(p => p.status === 'paid').reduce((s, p) => s + Number(p.amount), 0)
   const unpaidCount = payments.filter(p => p.status === 'unpaid').length
-  const hasBills = payments.length > 0
-
-  const generateBills = async () => {
-    setGenerating(true)
-    await supabase.rpc('mawladi_generate_bills', { p_building_id: id, p_month: currentMonth })
-    setGenerating(false)
-    load()
-  }
 
   const togglePay = async (payId: string, current: string) => {
     const next = current === 'paid' ? 'unpaid' : 'paid'
@@ -75,7 +77,7 @@ export default function BuildingDetail() {
   }
 
   const waMsg = (apt: any, amount: number) => {
-    const msg = `مرحبا ${apt.tenant_name || ''}، فاتورة المولد لشهر ${monthLabel} — $${amount}. الرجاء الدفع.\n\n_Mawladi ⚡ — تطبيق إدارة المولدات_\nwa.me/96171000000`
+    const msg = `مرحبا ${apt.tenant_name || ''}، فاتورة المولد لشهر ${monthLabel} — $${amount}. الرجاء الدفع.\n\n_Mawladi ⚡ — تطبيق إدارة المولدات_`
     return `https://wa.me/${(apt.tenant_phone || '').replace(/\D/g, '')}?text=${encodeURIComponent(msg)}`
   }
 
@@ -91,7 +93,7 @@ export default function BuildingDetail() {
       </div>
 
       {/* Summary bar */}
-      {hasBills && (
+      {payments.length > 0 && (
         <div className="flex gap-2 animate-fade-up delay-1">
           <div className="flex-1 bg-green-500/10 border border-green-500/20 rounded-xl p-3 text-center">
             <p className="text-mw-green font-black text-xl">{money(totalPaid)}</p>
@@ -108,25 +110,13 @@ export default function BuildingDetail() {
         </div>
       )}
 
-      {/* Action buttons */}
-      <div className="flex gap-2 animate-fade-up delay-2">
-        <button onClick={generateBills} disabled={generating || apartments.length === 0}
-          className="flex-1 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 bg-mw-amber/15 border border-mw-amber/30 text-mw-amber active:scale-95 transition-all disabled:opacity-40">
-          {generating ? <span className="w-4 h-4 border-2 border-mw-amber/30 border-t-mw-amber rounded-full spinner" /> : <RefreshCw size={16} />}
-          فواتير الشهر
-        </button>
+      {/* Add apartment button */}
+      <div className="animate-fade-up delay-2">
         <button onClick={() => setShowAdd(true)}
-          className="flex-1 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 bg-mw-elevated border border-mw-border text-mw-dim active:scale-95 transition-all">
+          className="w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 bg-mw-elevated border border-mw-border text-mw-dim active:scale-95 transition-all">
           <Plus size={16} /> شقة جديدة
         </button>
       </div>
-
-      {/* Apartment list with payment status */}
-      {!hasBills && apartments.length > 0 && (
-        <div className="card text-center py-6 animate-fade-up delay-3">
-          <p className="text-mw-dim text-sm">اضغط <span className="text-mw-amber font-bold">"فواتير الشهر"</span> لتوليد فواتير كل الشقق</p>
-        </div>
-      )}
 
       {apartments.length === 0 && (
         <div className="text-center py-12 animate-fade-in">
@@ -135,6 +125,7 @@ export default function BuildingDetail() {
         </div>
       )}
 
+      {/* Apartment list with payment status */}
       <div className="space-y-2">
         {apartments.map((apt, i) => {
           const pay = payments.find(p => p.apartment_id === apt.id)
@@ -143,7 +134,6 @@ export default function BuildingDetail() {
 
           return (
             <div key={apt.id} className={`card flex items-center gap-3 py-3 animate-fade-up delay-${Math.min(i + 3, 6)}`}>
-              {/* Payment toggle — big, easy to tap */}
               {pay ? (
                 <button onClick={() => togglePay(pay.id, pay.status)}
                   className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 active:scale-90 transition-all ${isPaid ? 'bg-green-500/20 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
@@ -155,7 +145,6 @@ export default function BuildingDetail() {
                 </div>
               )}
 
-              {/* Info */}
               <div className="flex-1 min-w-0">
                 <p className="text-mw-steel font-bold text-sm">
                   {apt.tenant_name || 'شقة ' + apt.number}
@@ -164,12 +153,10 @@ export default function BuildingDetail() {
                 <p className="text-mw-dim text-xs">{apt.amps} أمبير · {money(bill)}/شهر</p>
               </div>
 
-              {/* Amount */}
               <p className={`font-black text-base shrink-0 ${pay ? (isPaid ? 'text-green-400' : 'text-red-400') : 'text-mw-dim'}`}>
                 {money(pay ? pay.amount : bill)}
               </p>
 
-              {/* WhatsApp button */}
               {pay && !isPaid && apt.tenant_phone && (
                 <a href={waMsg(apt, Number(pay.amount))} target="_blank" rel="noopener noreferrer"
                   className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center text-green-400 active:scale-90 transition-all shrink-0">
@@ -181,7 +168,7 @@ export default function BuildingDetail() {
         })}
       </div>
 
-      {/* Add apartment modal — slides up from bottom like WhatsApp */}
+      {/* Add apartment modal */}
       {showAdd && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-end sm:items-center justify-center animate-fade-in" onClick={() => setShowAdd(false)}>
           <div className="card w-full max-w-sm space-y-3 animate-scale-in rounded-b-none sm:rounded-b-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -202,7 +189,7 @@ export default function BuildingDetail() {
                   </button>
                 ))}
               </div>
-              <p className="text-mw-amber text-xs mt-2 font-bold text-center">الفاتورة: {money((parseFloat(amps) || 0) * Number(building.price_per_amp))}/شهر</p>
+              <p className="text-mw-amber text-xs mt-2 font-bold text-center">الفاتورة: {money((parseFloat(amps) || 0) * Number(building?.price_per_amp || 0))}/شهر</p>
             </div>
             <button onClick={addApt} disabled={saving || !num.trim()} className="btn-amber text-base">{saving ? 'جاري...' : '+ إضافة شقة'}</button>
             <button onClick={() => setShowAdd(false)} className="w-full py-2 text-mw-dim text-sm font-bold">إلغاء</button>

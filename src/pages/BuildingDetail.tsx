@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { ArrowRight, Plus, Check, X, Phone, Zap } from 'lucide-react'
+import { ArrowRight, Plus, Check, X, Phone, Zap, Fuel, Users, Wrench, MoreHorizontal, Trash2, TrendingUp } from 'lucide-react'
 import { format } from 'date-fns'
 
 function money(n: any) { return '$' + Math.round(Number(n) || 0).toLocaleString('en-US') }
+
+const COST_TYPES = [
+  { key: 'fuel', label: 'مازوت', icon: Fuel, color: 'text-orange-400' },
+  { key: 'workers', label: 'عمال', icon: Users, color: 'text-blue-400' },
+  { key: 'maintenance', label: 'صيانة', icon: Wrench, color: 'text-yellow-400' },
+  { key: 'other', label: 'أخرى', icon: MoreHorizontal, color: 'text-mw-dim' },
+]
 
 export default function BuildingDetail() {
   const { id } = useParams()
@@ -12,14 +19,22 @@ export default function BuildingDetail() {
   const [building, setBuilding] = useState<any>(null)
   const [apartments, setApartments] = useState<any[]>([])
   const [payments, setPayments] = useState<any[]>([])
+  const [costs, setCosts] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
+  const [showAddCost, setShowAddCost] = useState(false)
   const [num, setNum] = useState('')
   const [floor, setFloor] = useState('')
   const [tenant, setTenant] = useState('')
   const [phone, setPhone] = useState('')
   const [amps, setAmps] = useState('10')
   const [saving, setSaving] = useState(false)
+
+  // Cost form
+  const [costType, setCostType] = useState('fuel')
+  const [costDesc, setCostDesc] = useState('')
+  const [costAmount, setCostAmount] = useState('')
+  const [savingCost, setSavingCost] = useState(false)
 
   const currentMonth = format(new Date(), 'yyyy-MM')
   const monthLabel = format(new Date(), 'MMMM yyyy')
@@ -34,8 +49,11 @@ export default function BuildingDetail() {
     if (b.data && (a.data ?? []).length > 0) {
       await supabase.rpc('mawladi_generate_bills', { p_building_id: id, p_month: currentMonth })
     }
-    const { data: p } = await supabase.from('mawladi_payments').select('*').eq('building_id', id).eq('month', currentMonth)
-    setPayments(p ?? []); setLoading(false)
+    const [p, c] = await Promise.all([
+      supabase.from('mawladi_payments').select('*').eq('building_id', id).eq('month', currentMonth),
+      supabase.from('mawladi_costs').select('*').eq('building_id', id).eq('month', currentMonth).order('created_at'),
+    ])
+    setPayments(p.data ?? []); setCosts(c.data ?? []); setLoading(false)
   }
   useEffect(() => { load() }, [id])
 
@@ -46,6 +64,8 @@ export default function BuildingDetail() {
   const totalOwed = payments.reduce((s, p) => s + Number(p.amount), 0)
   const totalPaid = payments.filter(p => p.status === 'paid').reduce((s, p) => s + Number(p.amount), 0)
   const unpaidCount = payments.filter(p => p.status === 'unpaid' && Number(p.amount) > 0).length
+  const totalCosts = costs.reduce((s, c) => s + Number(c.amount), 0)
+  const profit = totalPaid - totalCosts
 
   const togglePay = async (payId: string, current: string) => {
     const next = current === 'paid' ? 'unpaid' : 'paid'
@@ -78,6 +98,24 @@ export default function BuildingDetail() {
     load()
   }
 
+  const addCost = async () => {
+    if (!costAmount) return
+    setSavingCost(true)
+    await supabase.from('mawladi_costs').insert({
+      building_id: id, month: currentMonth, type: costType,
+      description: costDesc.trim() || COST_TYPES.find(t => t.key === costType)?.label || '',
+      amount: parseFloat(costAmount) || 0,
+    })
+    setSavingCost(false); setShowAddCost(false)
+    setCostType('fuel'); setCostDesc(''); setCostAmount('')
+    load()
+  }
+
+  const deleteCost = async (costId: string) => {
+    await supabase.from('mawladi_costs').delete().eq('id', costId)
+    load()
+  }
+
   const waMsg = (apt: any, amount: number) => {
     const msg = `مرحبا ${apt.tenant_name || ''}، فاتورة المولد لشهر ${monthLabel} — $${Math.round(amount)}. الرجاء الدفع.\n\n_Mawladi ⚡ — تطبيق إدارة المولدات_`
     return `https://wa.me/${(apt.tenant_phone || '').replace(/\D/g, '')}?text=${encodeURIComponent(msg)}`
@@ -90,32 +128,46 @@ export default function BuildingDetail() {
         <div className="flex-1 min-w-0">
           <h1 className="text-mw-steel text-xl font-black truncate">{building.name}</h1>
           <p className="text-mw-dim text-xs">
-            {apartments.length} شقة · {isMetered ? `$${building.price_per_kwh}/kWh · عداد` : `$${building.price_per_amp}/أمبير · ثابت`}
+            {apartments.length} شقة · {isMetered ? `$${building.price_per_kwh}/kWh` : `$${building.price_per_amp}/أمبير`}
           </p>
         </div>
       </div>
 
-      {/* Summary */}
-      {totalOwed > 0 && (
-        <div className="flex gap-2 animate-fade-up delay-1">
-          <div className="flex-1 bg-green-500/10 border border-green-500/20 rounded-xl p-3 text-center">
-            <p className="text-mw-green font-black text-xl">{money(totalPaid)}</p>
-            <p className="text-mw-dim text-[10px]">مدفوع</p>
+      {/* Summary — collected, costs, PROFIT */}
+      {(totalOwed > 0 || totalCosts > 0) && (
+        <div className="animate-fade-up delay-1">
+          <div className="flex gap-2">
+            <div className="flex-1 bg-green-500/10 border border-green-500/20 rounded-xl p-3 text-center">
+              <p className="text-mw-green font-black text-lg">{money(totalPaid)}</p>
+              <p className="text-mw-dim text-[10px]">تم جمعو</p>
+            </div>
+            <div className="flex-1 bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-center">
+              <p className="text-mw-red font-black text-lg">{money(totalCosts)}</p>
+              <p className="text-mw-dim text-[10px]">المصاريف</p>
+            </div>
+            <div className={`flex-1 rounded-xl p-3 text-center border ${profit >= 0 ? 'bg-mw-amber/10 border-mw-amber/20' : 'bg-red-500/10 border-red-500/20'}`}>
+              <div className="flex items-center justify-center gap-1">
+                <TrendingUp size={12} className={profit >= 0 ? 'text-mw-amber' : 'text-mw-red'} />
+                <p className={`font-black text-lg ${profit >= 0 ? 'text-mw-amber' : 'text-mw-red'}`}>{money(profit)}</p>
+              </div>
+              <p className="text-mw-dim text-[10px]">الربح</p>
+            </div>
           </div>
-          <div className="flex-1 bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-center">
-            <p className="text-mw-red font-black text-xl">{money(totalOwed - totalPaid)}</p>
-            <p className="text-mw-dim text-[10px]">{unpaidCount} لم يدفع</p>
-          </div>
-          <div className="flex-1 bg-mw-amber/10 border border-mw-amber/20 rounded-xl p-3 text-center">
-            <p className="text-mw-amber font-black text-xl">{money(totalOwed)}</p>
-            <p className="text-mw-dim text-[10px]">الإجمالي</p>
-          </div>
+          {unpaidCount > 0 && (
+            <p className="text-mw-red text-[10px] font-bold mt-2 text-center">{unpaidCount} شقة لم تدفع بعد — {money(totalOwed - totalPaid)} باقي</p>
+          )}
         </div>
       )}
 
-      <button onClick={() => setShowAdd(true)} className="w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 bg-mw-elevated border border-mw-border text-mw-dim active:scale-95 transition-all animate-fade-up delay-2">
-        <Plus size={16} /> شقة جديدة
-      </button>
+      {/* Action buttons */}
+      <div className="flex gap-2 animate-fade-up delay-2">
+        <button onClick={() => setShowAdd(true)} className="flex-1 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 bg-mw-elevated border border-mw-border text-mw-dim active:scale-95 transition-all">
+          <Plus size={16} /> شقة جديدة
+        </button>
+        <button onClick={() => setShowAddCost(true)} className="flex-1 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 bg-mw-elevated border border-mw-border text-mw-dim active:scale-95 transition-all">
+          <Fuel size={16} /> مصروف جديد
+        </button>
+      </div>
 
       {apartments.length === 0 && (
         <div className="text-center py-12 animate-fade-in"><p className="text-4xl mb-3">🏠</p><p className="text-mw-dim text-sm">أضف الشقق أولاً</p></div>
@@ -133,7 +185,6 @@ export default function BuildingDetail() {
           return (
             <div key={apt.id} className={`card py-3 space-y-2 animate-fade-up delay-${Math.min(i + 3, 6)}`}>
               <div className="flex items-center gap-3">
-                {/* Pay toggle */}
                 {pay && (isMetered ? hasReading : true) ? (
                   <button onClick={() => togglePay(pay.id, pay.status)}
                     className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 active:scale-90 transition-all ${isPaid ? 'bg-green-500/20 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
@@ -144,8 +195,6 @@ export default function BuildingDetail() {
                     <span className="text-mw-amber font-black">{apt.number}</span>
                   </div>
                 )}
-
-                {/* Info */}
                 <div className="flex-1 min-w-0">
                   <p className="text-mw-steel font-bold text-sm">
                     {apt.tenant_name || 'شقة ' + apt.number}
@@ -153,22 +202,18 @@ export default function BuildingDetail() {
                   </p>
                   {isMetered ? (
                     <p className="text-mw-dim text-xs">
-                      عداد سابق: {Number(pay?.reading_prev ?? apt.last_reading).toLocaleString()}
+                      عداد: {Number(pay?.reading_prev ?? apt.last_reading).toLocaleString()}
                       {hasReading && ` → ${Number(pay.reading_current).toLocaleString()} · ${usage.toLocaleString()} kWh`}
                     </p>
                   ) : (
                     <p className="text-mw-dim text-xs">{apt.amps} أمبير · {money(bill)}/شهر</p>
                   )}
                 </div>
-
-                {/* Amount */}
                 {(isMetered ? hasReading : true) && (
                   <p className={`font-black text-base shrink-0 ${pay ? (isPaid ? 'text-green-400' : 'text-red-400') : 'text-mw-dim'}`}>
                     {money(bill)}
                   </p>
                 )}
-
-                {/* WhatsApp */}
                 {pay && !isPaid && Number(pay.amount) > 0 && apt.tenant_phone && (
                   <a href={waMsg(apt, Number(pay.amount))} target="_blank" rel="noopener noreferrer"
                     className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center text-green-400 active:scale-90 transition-all shrink-0">
@@ -176,16 +221,10 @@ export default function BuildingDetail() {
                   </a>
                 )}
               </div>
-
-              {/* Meter reading input — only for metered buildings without a reading yet */}
               {isMetered && pay && !hasReading && !isPaid && (
                 <div className="flex items-center gap-2 mr-14">
                   <Zap size={14} className="text-mw-amber shrink-0" />
-                  <input
-                    type="number" inputMode="decimal"
-                    placeholder="أدخل قراءة العداد"
-                    className="input-m text-sm py-2 flex-1"
-                    dir="ltr"
+                  <input type="number" inputMode="decimal" placeholder="أدخل قراءة العداد" className="input-m text-sm py-2 flex-1" dir="ltr"
                     onBlur={e => { if (e.target.value) updateReading(pay.id, apt.id, e.target.value) }}
                     onKeyDown={e => { if (e.key === 'Enter') { const t = e.target as HTMLInputElement; if (t.value) { updateReading(pay.id, apt.id, t.value); t.blur() } } }}
                   />
@@ -195,6 +234,34 @@ export default function BuildingDetail() {
           )
         })}
       </div>
+
+      {/* Costs section */}
+      {costs.length > 0 && (
+        <div className="animate-fade-up delay-5">
+          <p className="text-mw-red/70 text-[11px] font-bold tracking-widest uppercase mb-3">📊 مصاريف الشهر</p>
+          <div className="space-y-2">
+            {costs.map(c => {
+              const ct = COST_TYPES.find(t => t.key === c.type) || COST_TYPES[3]
+              const Icon = ct.icon
+              return (
+                <div key={c.id} className="card py-3 flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl bg-mw-elevated flex items-center justify-center shrink-0`}>
+                    <Icon size={18} className={ct.color} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-mw-steel font-bold text-sm">{c.description || ct.label}</p>
+                    <p className="text-mw-dim text-[10px]">{ct.label}</p>
+                  </div>
+                  <p className="text-mw-red font-black text-base shrink-0">-{money(c.amount)}</p>
+                  <button onClick={() => deleteCost(c.id)} className="text-mw-dim hover:text-mw-red transition-colors shrink-0">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Add apartment modal */}
       {showAdd && (
@@ -212,16 +279,41 @@ export default function BuildingDetail() {
                 <label className="label-m">عدد الأمبير</label>
                 <div className="flex gap-2">
                   {[5, 10, 15, 20].map(a => (
-                    <button key={a} onClick={() => setAmps(String(a))}
-                      className={`flex-1 py-3 rounded-xl text-sm font-bold border transition-all active:scale-95 ${amps === String(a) ? 'bg-mw-amber border-mw-amber text-mw-bg' : 'bg-mw-elevated border-mw-border text-mw-dim'}`}>
-                      {a}A
-                    </button>
+                    <button key={a} onClick={() => setAmps(String(a))} className={`flex-1 py-3 rounded-xl text-sm font-bold border transition-all active:scale-95 ${amps === String(a) ? 'bg-mw-amber border-mw-amber text-mw-bg' : 'bg-mw-elevated border-mw-border text-mw-dim'}`}>{a}A</button>
                   ))}
                 </div>
               </div>
             )}
             <button onClick={addApt} disabled={saving || !num.trim()} className="btn-amber text-base">{saving ? 'جاري...' : '+ إضافة شقة'}</button>
             <button onClick={() => setShowAdd(false)} className="w-full py-2 text-mw-dim text-sm font-bold">إلغاء</button>
+          </div>
+        </div>
+      )}
+
+      {/* Add cost modal */}
+      {showAddCost && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-end sm:items-center justify-center animate-fade-in" onClick={() => setShowAddCost(false)}>
+          <div className="card w-full max-w-sm space-y-4 animate-scale-in rounded-b-none sm:rounded-b-2xl" onClick={e => e.stopPropagation()}>
+            <h2 className="text-mw-steel font-black text-lg">📊 مصروف جديد</h2>
+            <div>
+              <label className="label-m">نوع المصروف</label>
+              <div className="flex gap-2">
+                {COST_TYPES.map(ct => (
+                  <button key={ct.key} onClick={() => { setCostType(ct.key); if (!costDesc) setCostDesc(ct.label) }}
+                    className={`flex-1 py-3 rounded-xl text-sm font-bold border transition-all active:scale-95 flex flex-col items-center gap-1 ${costType === ct.key ? 'bg-mw-amber border-mw-amber text-mw-bg' : 'bg-mw-elevated border-mw-border text-mw-dim'}`}>
+                    <ct.icon size={16} />
+                    <span className="text-[10px]">{ct.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div><label className="label-m">الوصف</label><input value={costDesc} onChange={e => setCostDesc(e.target.value)} className="input-m" placeholder="مازوت، راتب، صيانة..." /></div>
+            <div>
+              <label className="label-m">المبلغ ($)</label>
+              <input value={costAmount} onChange={e => setCostAmount(e.target.value)} className="input-m text-center text-2xl font-black" type="number" inputMode="decimal" placeholder="0" />
+            </div>
+            <button onClick={addCost} disabled={savingCost || !costAmount} className="btn-amber text-base">{savingCost ? 'جاري...' : '+ إضافة مصروف'}</button>
+            <button onClick={() => setShowAddCost(false)} className="w-full py-2 text-mw-dim text-sm font-bold">إلغاء</button>
           </div>
         </div>
       )}
